@@ -8,20 +8,21 @@ jobs:
   zap-scan:
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Start vulnerable web server
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Start vulnerable web app
         run: |
-          # Cria uma aplicação vulnerável simples em Python
           cat > app.py << 'EOF'
           from flask import Flask, request
           app = Flask(__name__)
           @app.route('/')
           def index():
-              return '''<form method="GET" action="/vuln">
-              <input name="q"><input type="submit">
-              </form>'''
+              return '<form method="GET" action="/vuln"><input name="q"><input type="submit"></form>'
           @app.route('/vuln')
           def vuln():
               return f"Resultado: {request.args.get('q', '')}"
@@ -30,31 +31,42 @@ jobs:
           EOF
           pip install flask
           python app.py &
-          sleep 5
+          sleep 10
           curl http://localhost:8080 || echo "Falha ao iniciar"
-      
-
-      - name: Test if web server is reachable
-        run: |
-            curl -v http://localhost:8080 || echo "Servidor não respondeu"
-            sleep 2
-
 
       - name: ZAP Baseline Scan (Docker)
         run: |
-            docker run --user root \
-              -v ${{ github.workspace }}:/zap/wrk:rw \
-              --network host \
-              ghcr.io/zaproxy/zaproxy:stable \
-              zap-baseline.py -t http://localhost:8080 \
-              -J zap_output.json \
-              -r zap_report.html \
-              -a -d
-        continue-on-error: true
+          docker run --user root \
+            -v ${{ github.workspace }}:/zap/wrk:rw \
+            --network host \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://localhost:8080 \
+            -J zap_output.json \
+            -r zap_report.html \
+            -a || true
 
-      - name: Upload ZAP report
+      - name: Install jq
+        run: sudo apt-get install -y jq
+
+      - name: Fail pipeline on High/Critical vulnerabilities
+        run: |
+          if [ ! -f zap_output.json ]; then
+            echo "JSON report not found!"
+            exit 1
+          fi
+          HIGH=$(jq '[.site[].alerts[] | select(.risk == "High")] | length' zap_output.json)
+          CRIT=$(jq '[.site[].alerts[] | select(.risk == "Critical")] | length' zap_output.json)
+          echo "High: $HIGH, Critical: $CRIT"
+          if [ "$HIGH" -gt 0 ] || [ "$CRIT" -gt 0 ]; then
+            echo "❌ Vulnerabilidades altas/críticas encontradas. Pipeline falhou."
+            exit 1
+          fi
+
+      - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zap_html_report
-          path: report_html.html  # a action gera esse arquivo
+          name: zap-reports
+          path: |
+            zap_report.html
+            zap_output.json

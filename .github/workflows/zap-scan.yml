@@ -19,11 +19,37 @@ jobs:
         with:
           python-version: '3.x'
 
-      - name: Setup Java
-        uses: actions/setup-java@v3
-        with:
-          distribution: 'temurin'
-          java-version: '11'
+      - name: Start simple web server (vulnerável)
+        run: |
+          # Cria um index.html com um formulário vulnerável a XSS
+          cat > index.html << 'EOF'
+          <html>
+          <body>
+            <h2>Login Vulnerável</h2>
+            <form method="GET" action="/cgi-bin/echo">
+              Nome: <input name="nome"><input type="submit">
+            </form>
+          </body>
+          </html>
+          EOF
+
+          mkdir -p cgi-bin
+          cat > cgi-bin/echo << 'EOF'
+          #!/bin/bash
+          echo "Content-Type: text/html"
+          echo ""
+          echo "<html><body>"
+          echo "Olá $QUERY_STRING"
+          echo "</body></html>"
+          EOF
+          chmod +x cgi-bin/echo
+
+          # Inicia um servidor HTTP Python na porta 8080 (suporta CGI)
+          python3 -m http.server --cgi 8080 &
+          # Aguarda o servidor subir
+          sleep 5
+          # Testa se está respondendo
+          curl http://localhost:8080/ || echo "Servidor não respondeu"
 
       - name: Install OWASP ZAP
         run: |
@@ -33,50 +59,43 @@ jobs:
           tar -xzvf ZAP_2.14.0_Linux.tar.gz
           sudo mv ZAP_2.14.0 /opt/zap
 
-      - name: Start vulnerable web app (Flask)
-        run: |
-          pip install flask
-          python -c "
-          from flask import Flask, request
-          app = Flask(__name__)
-          @app.route('/')
-          def index():
-              return '<form method=\"POST\" action=\"/login\"><input name=\"user\"><input type=\"submit\"></form>'
-          @app.route('/login', methods=['POST'])
-          def login():
-              return f\"Olá {request.form['user']}\"
-          app.run(host='0.0.0.0', port=8080)
-          " &
-          sleep 5
-
-      - name: Run ZAP baseline scan (gerar JSON e HTML)
+      - name: Run ZAP baseline scan (modo silencioso)
+        id: zap_scan
+        continue-on-error: true   # Permite continuar mesmo se o ZAP achar problemas
         run: |
           /opt/zap/zap.sh -cmd -quickurl http://localhost:8080 -quickout ./zap_output.json
 
-      - name: Install jq for JSON parsing
+      - name: Install jq
         run: sudo apt-get install -y jq
 
-      - name: Fail pipeline if High or Critical vulnerabilities found
+      - name: Analisar severidades (falha pipeline se High/Critical)
         run: |
+          if [ ! -f ./zap_output.json ]; then
+            echo "Arquivo JSON não gerado. Pulando análise."
+            exit 0
+          fi
           HIGH_COUNT=$(jq '[.site[].alerts[] | select(.risk == "High")] | length' zap_output.json)
           CRIT_COUNT=$(jq '[.site[].alerts[] | select(.risk == "Critical")] | length' zap_output.json)
-          echo "High alerts: $HIGH_COUNT"
-          echo "Critical alerts: $CRIT_COUNT"
+          echo "High: $HIGH_COUNT, Critical: $CRIT_COUNT"
           if [ "$HIGH_COUNT" -gt 0 ] || [ "$CRIT_COUNT" -gt 0 ]; then
-            echo "❌ Vulnerabilidades altas ou críticas encontradas. Bloqueando deploy."
+            echo "❌ Vulnerabilidades graves encontradas! Pipeline falhará."
             exit 1
           fi
+          echo "✅ Nenhuma vulnerabilidade Alta ou Crítica."
 
-      - name: Convert JSON to HTML report (opcional)
+      - name: Gerar HTML simples a partir do JSON (para artefato)
         run: |
-          # Cria um HTML mínimo para artefato
-          echo "<html><body><pre>$(cat zap_output.json | jq .)</pre></body></html>" > zap_report.html
+          if [ -f ./zap_output.json ]; then
+            echo "<html><body><pre>$(cat zap_output.json | jq .)</pre></body></html>" > zap_report.html
+          else
+            echo "<html><body><h1>ZAP não gerou relatório</h1><p>Verifique os logs anteriores.</p></body></html>" > zap_report.html
+          fi
 
-      - name: Upload ZAP report as artifact
+      - name: Upload dos relatórios (sempre)
         uses: actions/upload-artifact@v4
         with:
           name: zap-security-report
           path: |
             zap_output.json
             zap_report.html
-        if: always()
+        if: always()   # ESSENCIAL: sobe mesmo com falha

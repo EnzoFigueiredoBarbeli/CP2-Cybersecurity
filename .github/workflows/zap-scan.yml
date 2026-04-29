@@ -1,0 +1,61 @@
+name: OWASP ZAP Security Scan
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  zap-scan:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Java (necessário para o ZAP)
+        uses: actions/setup-java@v3
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Install OWASP ZAP
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y wget unzip
+          wget https://github.com/zaproxy/zaproxy/releases/download/v2.14.0/ZAP_2.14.0_Linux.tar.gz
+          tar -xzvf ZAP_2.14.0_Linux.tar.gz
+          sudo mv ZAP_2.14.0 /opt/zap
+          echo "ZAP_PATH=/opt/zap/zap.sh" >> $GITHUB_ENV
+
+      - name: Start target web app (exemplo: servidor Python simples)
+        run: |
+          # Simula uma aplicação vulnerável (veja passo 4)
+          python3 -m http.server 8080 &
+          sleep 5
+
+      - name: Run OWASP ZAP baseline scan
+        run: |
+          /opt/zap/zap.sh -cmd -quickurl http://localhost:8080 -quickprogress -quickout ./zap_report.html
+
+      - name: Check for High/Critical alerts
+        id: check_alerts
+        run: |
+          # O ZAP CLI pode gerar JSON, mas para simplificar, usamos grep no HTML
+          # Alternativa: usar o modo -quickout com formato JSON e um parser
+          # Exemplo com grep (não robusto, mas didático)
+          if grep -qE 'Risk: (High|Critical)' ./zap_report.html; then
+            echo "ALERTAS ALTAS OU CRÍTICAS ENCONTRADAS!"
+            echo "Vulnerabilidades que impedem o deploy."
+            exit 1
+          else
+            echo "Nenhuma vulnerabilidade Alta ou Crítica detectada."
+          fi
+
+      - name: Upload ZAP report as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zap-security-report
+          path: ./zap_report.html
+          retention-days: 30

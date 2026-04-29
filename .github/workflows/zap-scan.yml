@@ -32,6 +32,13 @@ jobs:
           python app.py &
           sleep 5
           curl http://localhost:8080 || echo "Falha ao iniciar"
+      
+
+      - name: Test if web server is reachable
+        run: |
+            curl -v http://localhost:8080 || echo "Servidor não respondeu"
+            sleep 2
+
 
       - name: ZAP Baseline Scan (Docker)
         run: |

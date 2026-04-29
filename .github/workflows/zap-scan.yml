@@ -17,6 +17,7 @@ jobs:
 
       - name: Start vulnerable web app
         run: |
+          cat > app.py << 'EOF'
           from flask import Flask, request, render_template_string
           app = Flask(__name__)
           
@@ -52,6 +53,11 @@ jobs:
           
           if __name__ == '__main__':
               app.run(host='0.0.0.0', port=8080, debug=True)
+          EOF
+          pip install flask
+          python app.py &
+          sleep 10
+          curl http://localhost:8080 || echo "Falha ao iniciar"
 
       - name: ZAP Baseline Scan (Docker)
         run: |

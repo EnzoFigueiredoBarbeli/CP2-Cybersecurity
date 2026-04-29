@@ -42,7 +42,7 @@ jobs:
               zap-baseline.py -t http://localhost:8080 \
               -J zap_output.json \
               -r zap_report.html \
-              -a
+              -a -d
         continue-on-error: true
 
       - name: Upload ZAP report

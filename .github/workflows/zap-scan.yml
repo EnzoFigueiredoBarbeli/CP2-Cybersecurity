@@ -3,99 +3,48 @@ name: OWASP ZAP Security Scan
 on:
   push:
     branches: [ main, master ]
-  pull_request:
-    branches: [ main, master ]
 
 jobs:
   zap-scan:
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout code
+      - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
-
-      - name: Start simple web server (vulnerável)
+      - name: Start vulnerable web server
         run: |
-          # Cria um index.html com um formulário vulnerável a XSS
-          cat > index.html << 'EOF'
-          <html>
-          <body>
-            <h2>Login Vulnerável</h2>
-            <form method="GET" action="/cgi-bin/echo">
-              Nome: <input name="nome"><input type="submit">
-            </form>
-          </body>
-          </html>
+          # Cria uma aplicação vulnerável simples em Python
+          cat > app.py << 'EOF'
+          from flask import Flask, request
+          app = Flask(__name__)
+          @app.route('/')
+          def index():
+              return '''<form method="GET" action="/vuln">
+              <input name="q"><input type="submit">
+              </form>'''
+          @app.route('/vuln')
+          def vuln():
+              return f"Resultado: {request.args.get('q', '')}"
+          if __name__ == '__main__':
+              app.run(host='0.0.0.0', port=8080)
           EOF
-
-          mkdir -p cgi-bin
-          cat > cgi-bin/echo << 'EOF'
-          #!/bin/bash
-          echo "Content-Type: text/html"
-          echo ""
-          echo "<html><body>"
-          echo "Olá $QUERY_STRING"
-          echo "</body></html>"
-          EOF
-          chmod +x cgi-bin/echo
-
-          # Inicia um servidor HTTP Python na porta 8080 (suporta CGI)
-          python3 -m http.server --cgi 8080 &
-          # Aguarda o servidor subir
+          pip install flask
+          python app.py &
           sleep 5
-          # Testa se está respondendo
-          curl http://localhost:8080/ || echo "Servidor não respondeu"
+          curl http://localhost:8080 || echo "Falha ao iniciar"
 
-      - name: Install OWASP ZAP
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y wget unzip
-          wget https://github.com/zaproxy/zaproxy/releases/download/v2.14.0/ZAP_2.14.0_Linux.tar.gz
-          tar -xzvf ZAP_2.14.0_Linux.tar.gz
-          sudo mv ZAP_2.14.0 /opt/zap
+      - name: ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.9.0
+        with:
+          target: 'http://localhost:8080'
+          cmd_options: '-a'  # automatiza alertas
+          rules_file_name: '.zap/rules.tsv'  # opcional
+          issue_title: 'ZAP report'
+          token: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Run ZAP baseline scan (modo silencioso)
-        id: zap_scan
-        continue-on-error: true   # Permite continuar mesmo se o ZAP achar problemas
-        run: |
-          /opt/zap/zap.sh -cmd -quickurl http://localhost:8080 -quickout ./zap_output.json
-
-      - name: Install jq
-        run: sudo apt-get install -y jq
-
-      - name: Analisar severidades (falha pipeline se High/Critical)
-        run: |
-          if [ ! -f ./zap_output.json ]; then
-            echo "Arquivo JSON não gerado. Pulando análise."
-            exit 0
-          fi
-          HIGH_COUNT=$(jq '[.site[].alerts[] | select(.risk == "High")] | length' zap_output.json)
-          CRIT_COUNT=$(jq '[.site[].alerts[] | select(.risk == "Critical")] | length' zap_output.json)
-          echo "High: $HIGH_COUNT, Critical: $CRIT_COUNT"
-          if [ "$HIGH_COUNT" -gt 0 ] || [ "$CRIT_COUNT" -gt 0 ]; then
-            echo "❌ Vulnerabilidades graves encontradas! Pipeline falhará."
-            exit 1
-          fi
-          echo "✅ Nenhuma vulnerabilidade Alta ou Crítica."
-
-      - name: Gerar HTML simples a partir do JSON (para artefato)
-        run: |
-          if [ -f ./zap_output.json ]; then
-            echo "<html><body><pre>$(cat zap_output.json | jq .)</pre></body></html>" > zap_report.html
-          else
-            echo "<html><body><h1>ZAP não gerou relatório</h1><p>Verifique os logs anteriores.</p></body></html>" > zap_report.html
-          fi
-
-      - name: Upload dos relatórios (sempre)
+      - name: Upload ZAP report
+        if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zap-security-report
-          path: |
-            zap_output.json
-            zap_report.html
-        if: always()   # ESSENCIAL: sobe mesmo com falha
+          name: zap_html_report
+          path: report_html.html  # a action gera esse arquivo

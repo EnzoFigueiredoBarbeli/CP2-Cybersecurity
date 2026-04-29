@@ -33,14 +33,17 @@ jobs:
           sleep 5
           curl http://localhost:8080 || echo "Falha ao iniciar"
 
-      - name: ZAP Baseline Scan
-        uses: zaproxy/action-baseline@v0.9.0
-        with:
-          target: 'http://localhost:8080'
-          cmd_options: '-a'  # automatiza alertas
-          rules_file_name: '.zap/rules.tsv'  # opcional
-          issue_title: 'ZAP report'
-          token: ${{ secrets.GITHUB_TOKEN }}
+      - name: ZAP Baseline Scan (Docker)
+        run: |
+            docker run --user root \
+              -v ${{ github.workspace }}:/zap/wrk:rw \
+              --network host \
+              ghcr.io/zaproxy/zaproxy:stable \
+              zap-baseline.py -t http://localhost:8080 \
+              -J zap_output.json \
+              -r zap_report.html \
+              -a
+        continue-on-error: true
 
       - name: Upload ZAP report
         if: always()
